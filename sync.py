@@ -73,3 +73,99 @@ def local_project_targets(home: Path, data: Path):
         repo_memory = data / "projects" / name / "memory"
         targets.append((local_memory, repo_memory))
     return targets
+
+
+import subprocess
+
+import paths
+
+
+def run_git(args, cwd) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def git_pull(repo_root: Path) -> None:
+    run_git(["pull", "--rebase"], cwd=repo_root)
+
+
+def git_push(repo_root: Path) -> None:
+    run_git(["push"], cwd=repo_root)
+
+
+def has_staged_changes(repo_root: Path) -> bool:
+    result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo_root)
+    return result.returncode != 0
+
+
+def git_commit_and_push(repo_root: Path, message: str) -> bool:
+    run_git(["add", "-A", "data"], cwd=repo_root)
+    if not has_staged_changes(repo_root):
+        return False
+    run_git(["commit", "-m", message], cwd=repo_root)
+    try:
+        git_push(repo_root)
+    except subprocess.CalledProcessError:
+        git_pull(repo_root)
+        git_push(repo_root)
+    return True
+
+
+def sync_once(home: Path, repo_root: Path, data: Path, state_manifest_path: Path) -> None:
+    old_manifest = manifest.load_manifest(state_manifest_path)
+    current = {}
+
+    global_local = home / "CLAUDE.md"
+    global_repo = data / "global" / "CLAUDE.md"
+    skills_local = home / "skills"
+    skills_repo = data / "skills"
+    project_targets = local_project_targets(home, data)
+    settings_path = home / "settings.json"
+    plugins_json_path = data / "plugins.json"
+
+    # Collect local changes into the repo working tree *before* pulling, so
+    # that a genuine conflict with concurrent remote changes to the same file
+    # can be committed and reconciled by `git pull --rebase` (and thus by the
+    # memmerge driver) instead of being silently clobbered by a plain copy.
+    collect_local_file_change(global_local, global_repo, old_manifest, "global/CLAUDE.md", current)
+    current.update(
+        {f"skills/{rel}": digest for rel, digest in
+         collect_local_changes(skills_local, skills_repo, old_manifest, "skills").items()}
+    )
+    for local_memory, repo_memory in project_targets:
+        project_name = repo_memory.parent.name
+        prefix = f"projects/{project_name}/memory"
+        current.update(collect_local_changes(local_memory, repo_memory, old_manifest, prefix))
+
+    mirror.sync_plugins_to_repo(settings_path, plugins_json_path)
+    if plugins_json_path.is_file():
+        current["plugins.json"] = manifest.hash_file(plugins_json_path)
+
+    if not git_commit_and_push(repo_root, "claude-sync: update"):
+        # Nothing local to commit, but another machine may have pushed
+        # changes we don't have yet.
+        git_pull(repo_root)
+
+    # Apply the now-authoritative (possibly merged) repo content back down
+    # into the local home directory.
+    apply_remote_file(global_local, global_repo, old_manifest, "global/CLAUDE.md")
+    apply_remote_changes(skills_local, skills_repo, old_manifest, "skills")
+    for local_memory, repo_memory in project_targets:
+        project_name = repo_memory.parent.name
+        apply_remote_changes(local_memory, repo_memory, old_manifest, f"projects/{project_name}/memory")
+    mirror.apply_plugins_from_repo(settings_path, plugins_json_path)
+
+    manifest.save_manifest(state_manifest_path, current)
+
+
+def main() -> int:
+    sync_once(
+        home=paths.claude_home(),
+        repo_root=paths.repo_root(),
+        data=paths.data_dir(),
+        state_manifest_path=paths.manifest_path(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
