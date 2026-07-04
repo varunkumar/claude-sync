@@ -23,9 +23,13 @@ cron (`install.sh` wires this up), not a background daemon.
   `data/.gitattributes`. Does a two-way union of lines from both sides,
   not a true three-way merge — deletions aren't tracked, since memory
   entries are treated as append-mostly.
-- `sync.py` — orchestrates one full sync cycle: pull, apply remote
-  changes down to `~/.claude/`, collect local changes up into `data/`,
-  commit, push (retrying once on a rejected push).
+- `sync.py` — orchestrates one full sync cycle: collect local changes up
+  into `data/`, commit and push (falling back to a plain pull if there was
+  nothing local to send; a rejected push retries via `pull --rebase` then
+  push once), then apply the now-authoritative repo content back down to
+  `~/.claude/`. Local changes are committed before being applied down
+  deliberately — pulling first was found to risk silently overwriting a
+  concurrent, not-yet-committed local edit with freshly-pulled content.
 
 ## Testing conventions
 
