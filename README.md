@@ -19,12 +19,19 @@ of `~/.claude/` through this git repo.
 
 `sync.py` runs on a schedule (every 15 minutes via cron) and on each run:
 
-1. `git pull --rebase` to fetch other machines' changes.
-2. Applies newly-pulled repo content out to the local `~/.claude/` paths.
-3. Detects local changes (new/edited/deleted files) by comparing content
+1. Detects local changes (new/edited/deleted files) by comparing content
    hashes against `~/.claudesync/manifest.json`, and mirrors them into this
    repo's `data/` directory.
-4. Commits and pushes if anything changed, retrying once on a rejected push.
+2. Commits and pushes if anything changed. If the push is rejected (another
+   machine pushed first), pulls with `--rebase` and retries once — if
+   there was nothing local to commit, pulls directly instead.
+3. Applies the now-authoritative (and possibly just-merged) repo content
+   out to the local `~/.claude/` paths.
+4. Updates the manifest with fresh hashes for everything just synced.
+
+Local changes are committed and reconciled with the remote *before* being
+applied back out locally — pulling first would risk silently overwriting a
+concurrent, not-yet-committed local edit with freshly-pulled remote content.
 
 Per-project `MEMORY.md` files use a custom git merge driver (`memmerge.py`)
 that unions entries from both sides instead of producing conflict markers,
