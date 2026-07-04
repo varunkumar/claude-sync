@@ -21,7 +21,25 @@ def test_install_script_configures_merge_driver(tmp_path, monkeypatch):
 
     fake_home = tmp_path / "fake_home"
     fake_home.mkdir()
-    env = {"HOME": str(fake_home), "PATH": "/usr/bin:/bin"}
+
+    # install.sh shells out to the real `crontab` binary, which is keyed by OS
+    # user account, not $HOME — it is NOT sandboxed by overriding HOME. Put a
+    # no-op stub ahead of it on PATH so this test can never touch the real
+    # system crontab.
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    crontab_stub = fake_bin / "crontab"
+    crontab_stub.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  -l) exit 1 ;;\n"                 # no existing crontab, matches real first-run behavior
+        "  -) cat > /dev/null; exit 0 ;;\n"  # accept and discard the write install.sh pipes in
+        "  *) exit 0 ;;\n"
+        "esac\n"
+    )
+    crontab_stub.chmod(0o755)
+
+    env = {"HOME": str(fake_home), "PATH": f"{fake_bin}:/usr/bin:/bin"}
 
     subprocess.run(["sh", str(install_copy)], cwd=repo, check=True, env=env, capture_output=True, text=True)
 
