@@ -105,13 +105,25 @@ def git_commit_and_push(repo_root: Path, message: str) -> bool:
     try:
         git_push(repo_root)
     except subprocess.CalledProcessError:
-        git_pull(repo_root)
-        git_push(repo_root)
+        try:
+            git_pull(repo_root)
+            git_push(repo_root)
+        except subprocess.CalledProcessError:
+            # A conflict (e.g. in a file the memmerge driver doesn't cover,
+            # such as the global CLAUDE.md) can leave the rebase started by
+            # git_pull mid-flight. Abort it so the repo isn't left wedged for
+            # the next cron run; the local commit made above is preserved.
+            subprocess.run(["git", "rebase", "--abort"], cwd=repo_root)
+            raise
     return True
 
 
 def sync_once(home: Path, repo_root: Path, data: Path, state_manifest_path: Path) -> None:
     old_manifest = manifest.load_manifest(state_manifest_path)
+    # `current` is populated by the collect_* calls below purely because their
+    # signatures require an out-param to write into; it reflects local state
+    # *before* the apply-down phase and is intentionally not what gets saved
+    # to the manifest (see `final_manifest` below).
     current = {}
 
     global_local = home / "CLAUDE.md"
@@ -154,7 +166,32 @@ def sync_once(home: Path, repo_root: Path, data: Path, state_manifest_path: Path
         apply_remote_changes(local_memory, repo_memory, old_manifest, f"projects/{project_name}/memory")
     mirror.apply_plugins_from_repo(settings_path, plugins_json_path)
 
-    manifest.save_manifest(state_manifest_path, current)
+    # Re-snapshot from the repo/data side *after* the apply-down phase, rather
+    # than saving the pre-apply `current` collected above. `data/` is the
+    # authoritative post-merge state once the git commit/push/pull have
+    # settled, and by this point local has been made to match it. Saving the
+    # earlier, pre-apply snapshot would omit anything that arrived from a
+    # remote machine this cycle (a merged MEMORY.md, a new skill, etc.),
+    # causing it to be misdetected as a local change next cycle, and — worse —
+    # a local deletion made in between two cycles could get silently
+    # re-applied from the remote side because the manifest never reflected
+    # the addition in the first place.
+    final_manifest = {}
+    if global_repo.is_file():
+        final_manifest["global/CLAUDE.md"] = manifest.hash_file(global_repo)
+    final_manifest.update(
+        {f"skills/{rel}": digest for rel, digest in manifest.snapshot_tree(skills_repo).items()}
+    )
+    for local_memory, repo_memory in project_targets:
+        project_name = repo_memory.parent.name
+        prefix = f"projects/{project_name}/memory"
+        final_manifest.update(
+            {f"{prefix}/{rel}": digest for rel, digest in manifest.snapshot_tree(repo_memory).items()}
+        )
+    if plugins_json_path.is_file():
+        final_manifest["plugins.json"] = manifest.hash_file(plugins_json_path)
+
+    manifest.save_manifest(state_manifest_path, final_manifest)
 
 
 def main() -> int:
