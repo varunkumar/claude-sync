@@ -72,25 +72,39 @@ this is a single-user, low-project-count setup; not handled specially.
 ## Sync mechanism
 
 A single Python script, `sync.py`, run periodically via cron (`*/15 * * * *`
-on Mac/WSL/Linux workspace) with pull-then-push semantics:
+on Mac/WSL/Linux workspace) each cycle:
 
-1. **Pull**: `git pull --rebase` on the repo.
-2. **Apply remote → local**: for each synced path, copy repo `data/`
-   contents out to the corresponding `~/.claude/` location, except
-   `plugins.json`, which is merged key-by-key into local
-   `~/.claude/settings.json` (only `enabledPlugins` /
-   `extraKnownMarketplaces` are overwritten; all other keys, e.g. `hooks`,
-   are left untouched).
-2. **Detect local → repo changes**: for each synced path, compute a
+1. **Detect local → repo changes**: for each synced path, compute a
    content hash and compare against `~/.claudesync/manifest.json` (the hash
    recorded as of the last successful sync). A mismatch means the local file
    changed since last sync; mirror it into `data/`. A path present in the
    manifest but missing locally means a local deletion; remove it from
    `data/` too.
-3. **Commit & push**: if anything in `data/` changed, `git add -A`,
-   commit with a timestamped message, and `git push`. Conflicts during
-   push (remote moved) trigger a re-pull-rebase-retry, once.
+2. **Commit & push**: if anything in `data/` changed, `git add -A`,
+   commit with a timestamped message, and `git push`. If the push is
+   rejected (remote moved), `git pull --rebase` and retry the push once —
+   this is the path that surfaces a real conflict between this machine's
+   just-committed edit and another machine's already-pushed edit, and is
+   where the `MEMORY.md` merge driver (see Conflict resolution) actually
+   fires. If there was nothing local to commit, `git pull --rebase`
+   directly instead, to still pick up any other machine's changes.
+3. **Apply repo → local**: for each synced path, copy the now-authoritative
+   (and possibly just-merged) `data/` contents out to the corresponding
+   `~/.claude/` location, except `plugins.json`, which is merged key-by-key
+   into local `~/.claude/settings.json` (only `enabledPlugins` /
+   `extraKnownMarketplaces` are overwritten; all other keys, e.g. `hooks`,
+   are left untouched).
 4. **Update manifest**: record fresh hashes for everything just synced.
+
+Local changes are committed and reconciled with the remote *before* being
+applied back out locally, rather than pulling first. An earlier pull-first
+design was found to have a real bug: applying freshly-pulled remote content
+down to `~/.claude` before capturing a concurrent, not-yet-committed local
+edit into the manifest would silently overwrite that local edit with no
+merge and no conflict — pure data loss. Committing local changes first
+closes that hole: a local edit is either captured into a commit before
+anything else touches its file, or (if nothing local changed) skipped
+entirely in favor of a plain pull.
 
 The manifest exists specifically so genuine local deletions can be
 distinguished from files simply not yet pulled from another machine (same
