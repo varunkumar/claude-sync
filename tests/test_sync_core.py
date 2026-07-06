@@ -103,7 +103,7 @@ def test_local_project_targets_maps_basename_to_repo_memory_dir(tmp_path):
     with (project_dir / "session.jsonl").open("w") as f:
         f.write('{"cwd": "/Users/varunkumar/projects/claude-sync"}\n')
 
-    targets = sync.local_project_targets(home, data)
+    targets = sync.local_project_targets(home, data, {})
 
     assert targets == [(project_dir / "memory", data / "projects" / "claude-sync" / "memory")]
 
@@ -115,4 +115,15 @@ def test_local_project_targets_skips_projects_with_no_resolvable_cwd(tmp_path):
     (project_dir / "memory").mkdir(parents=True)
     (project_dir / "session.jsonl").write_text('{"type": "summary"}\n')
 
-    assert sync.local_project_targets(home, data) == []
+    assert sync.local_project_targets(home, data, {}) == []
+
+
+def test_local_project_targets_falls_back_to_cached_name_when_jsonl_is_gone(tmp_path):
+    home = tmp_path / ".claude"
+    data = tmp_path / "data"
+    project_dir = home / "projects" / "-Users-varunkumar-projects-claude-sync"
+    (project_dir / "memory").mkdir(parents=True)
+
+    targets = sync.local_project_targets(home, data, {project_dir.name: "claude-sync"})
+
+    assert targets == [(project_dir / "memory", data / "projects" / "claude-sync" / "memory")]
