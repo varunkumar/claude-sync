@@ -98,7 +98,7 @@ def has_staged_changes(repo_root: Path) -> bool:
 
 
 def git_commit_and_push(repo_root: Path, message: str) -> bool:
-    run_git(["add", "-A", "data"], cwd=repo_root)
+    run_git(["add", "-A", "."], cwd=repo_root)
     if not has_staged_changes(repo_root):
         return False
     run_git(["commit", "-m", message], cwd=repo_root)
