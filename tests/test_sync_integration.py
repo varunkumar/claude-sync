@@ -50,6 +50,7 @@ def test_sync_once_pushes_local_memory_entry_to_remote(tmp_path):
         repo_root=repo,
         data=repo / "data",
         state_manifest_path=state_manifest_path,
+        project_names_path=tmp_path / "state" / "project_names.json",
     )
 
     assert (repo / "data" / "projects" / "demo" / "memory" / "MEMORY.md").read_text() == "- first entry\n"
@@ -77,6 +78,7 @@ def test_sync_once_pulls_another_machines_changes_down(tmp_path):
         repo_root=repo_a,
         data=repo_a / "data",
         state_manifest_path=tmp_path / "state_a" / "manifest.json",
+        project_names_path=tmp_path / "state_a" / "project_names.json",
     )
 
     # Machine B clones fresh and runs sync_once with no local changes; should pull A's entry down.
@@ -93,6 +95,7 @@ def test_sync_once_pulls_another_machines_changes_down(tmp_path):
         repo_root=repo_b,
         data=repo_b / "data",
         state_manifest_path=tmp_path / "state_b" / "manifest.json",
+        project_names_path=tmp_path / "state_b" / "project_names.json",
     )
 
     pulled = home_b / "projects" / "-Users-bob-does-not-matter"
@@ -122,6 +125,7 @@ def test_sync_once_unions_concurrent_memory_edits_via_merge_driver(tmp_path):
     sync.sync_once(
         home=home_a, repo_root=repo_a, data=repo_a / "data",
         state_manifest_path=tmp_path / "state_a" / "manifest.json",
+        project_names_path=tmp_path / "state_a" / "project_names.json",
     )
 
     repo_b = tmp_path / "repo_b"
@@ -140,6 +144,7 @@ def test_sync_once_unions_concurrent_memory_edits_via_merge_driver(tmp_path):
     sync.sync_once(
         home=home_b, repo_root=repo_b, data=repo_b / "data",
         state_manifest_path=tmp_path / "state_b" / "manifest.json",
+        project_names_path=tmp_path / "state_b" / "project_names.json",
     )
 
     # Machine A now adds its own new entry and syncs again; must pull + merge B's entry.
@@ -147,6 +152,7 @@ def test_sync_once_unions_concurrent_memory_edits_via_merge_driver(tmp_path):
     sync.sync_once(
         home=home_a, repo_root=repo_a, data=repo_a / "data",
         state_manifest_path=tmp_path / "state_a" / "manifest.json",
+        project_names_path=tmp_path / "state_a" / "project_names.json",
     )
 
     merged = (repo_a / "data" / "projects" / "demo" / "memory" / "MEMORY.md").read_text()
@@ -164,6 +170,7 @@ def test_sync_once_manifest_reflects_post_apply_state_not_stale_pre_apply_snapsh
     sync.sync_once(
         home=home_a, repo_root=repo_a, data=repo_a / "data",
         state_manifest_path=tmp_path / "state_a" / "manifest.json",
+        project_names_path=tmp_path / "state_a" / "project_names.json",
     )
 
     # Machine B clones fresh (no local skills yet) and syncs: this pulls
@@ -177,7 +184,7 @@ def test_sync_once_manifest_reflects_post_apply_state_not_stale_pre_apply_snapsh
     home_b = tmp_path / "home_b" / ".claude"
     home_b.mkdir(parents=True)
     state_b = tmp_path / "state_b" / "manifest.json"
-    sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b)
+    sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b, project_names_path=state_b.parent / "project_names.json")
 
     assert (home_b / "skills" / "shared.md").is_file()
 
@@ -196,7 +203,7 @@ def test_sync_once_manifest_reflects_post_apply_state_not_stale_pre_apply_snapsh
     # old_manifest" and copy it straight back down, silently reverting the
     # user's deletion.
     (home_b / "skills" / "shared.md").unlink()
-    sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b)
+    sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b, project_names_path=state_b.parent / "project_names.json")
 
     assert not (home_b / "skills" / "shared.md").is_file(), (
         "local deletion was silently reverted by a stale manifest snapshot"
@@ -215,6 +222,7 @@ def test_sync_once_manifest_reflecting_post_apply_state_avoids_wasted_recommit(t
     sync.sync_once(
         home=home_a, repo_root=repo_a, data=repo_a / "data",
         state_manifest_path=tmp_path / "state_a" / "manifest.json",
+        project_names_path=tmp_path / "state_a" / "project_names.json",
     )
 
     repo_b = tmp_path / "repo_b"
@@ -224,7 +232,7 @@ def test_sync_once_manifest_reflecting_post_apply_state_avoids_wasted_recommit(t
     home_b = tmp_path / "home_b" / ".claude"
     home_b.mkdir(parents=True)
     state_b = tmp_path / "state_b" / "manifest.json"
-    sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b)
+    sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b, project_names_path=state_b.parent / "project_names.json")
 
     commits_after_first_cycle = subprocess.run(
         ["git", "rev-list", "--count", "HEAD"], cwd=repo_b, capture_output=True, text=True, check=True
@@ -235,7 +243,7 @@ def test_sync_once_manifest_reflecting_post_apply_state_avoids_wasted_recommit(t
     # cycle), this cycle would misdetect shared.md as a new local change and
     # create a wasted, redundant commit re-pushing content the repo already
     # has.
-    sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b)
+    sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b, project_names_path=state_b.parent / "project_names.json")
 
     commits_after_second_cycle = subprocess.run(
         ["git", "rev-list", "--count", "HEAD"], cwd=repo_b, capture_output=True, text=True, check=True
@@ -258,6 +266,7 @@ def test_sync_once_aborts_rebase_on_non_memory_conflict(tmp_path):
     sync.sync_once(
         home=home_a, repo_root=repo_a, data=repo_a / "data",
         state_manifest_path=tmp_path / "state_a" / "manifest.json",
+        project_names_path=tmp_path / "state_a" / "project_names.json",
     )
 
     repo_b = tmp_path / "repo_b"
@@ -267,7 +276,7 @@ def test_sync_once_aborts_rebase_on_non_memory_conflict(tmp_path):
     home_b = tmp_path / "home_b" / ".claude"
     home_b.mkdir(parents=True)
     state_b = tmp_path / "state_b" / "manifest.json"
-    sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b)
+    sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b, project_names_path=state_b.parent / "project_names.json")
 
     assert (home_b / "CLAUDE.md").read_text() == "base version\n"
 
@@ -276,12 +285,13 @@ def test_sync_once_aborts_rebase_on_non_memory_conflict(tmp_path):
     sync.sync_once(
         home=home_a, repo_root=repo_a, data=repo_a / "data",
         state_manifest_path=tmp_path / "state_a" / "manifest.json",
+        project_names_path=tmp_path / "state_a" / "project_names.json",
     )
 
     # B edits differently, without having pulled A's change first.
     (home_b / "CLAUDE.md").write_text("edited on B differently\n")
     with pytest.raises(subprocess.CalledProcessError):
-        sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b)
+        sync.sync_once(home=home_b, repo_root=repo_b, data=repo_b / "data", state_manifest_path=state_b, project_names_path=state_b.parent / "project_names.json")
 
     # The repo must not be left mid-rebase for the next cron run.
     assert not (repo_b / ".git" / "rebase-merge").exists()

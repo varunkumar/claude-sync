@@ -50,7 +50,7 @@ Then:
 ```sh
 git clone https://github.com/varunkumar/claude-sync.git
 cd claude-sync
-./install.sh <your-data-repo-git-url>
+./install.sh <your-data-repo-git-url> [ssh-deploy-key-path]
 ```
 
 `install.sh`:
@@ -62,10 +62,48 @@ cd claude-sync
   `.gitattributes` (registering the `MEMORY.md` merge driver) and pushes
   it, so the first scheduled sync has something to push against.
 - Registers the `MEMORY.md` merge driver against the data repo.
-- Installs a cron entry that runs `sync.py` every 15 minutes.
+- Installs a cron entry that runs `sync.py` every 15 minutes. If you pass
+  `ssh-deploy-key-path`, that entry also sets `GIT_SSH_COMMAND` so git uses
+  that key directly (see "cron auth" below); if omitted, cron runs with
+  whatever auth is already configured for the remote.
 
-It assumes git push/pull authentication (SSH key or credential helper) is
-already set up for the data repo's remote.
+It otherwise assumes git push/pull authentication (SSH agent, credential
+helper, etc.) is already set up for the data repo's remote **and reachable
+from cron**, which is not automatic on every OS — see below.
+
+### Cron auth
+
+`cron` runs outside your login session, so on some setups it can't reach an
+`ssh-agent` or a GUI-gated credential store (this bit macOS specifically:
+`git-credential-osxkeychain` works fine interactively but fails from cron
+with `could not read Username ... Device not configured`, because the login
+keychain isn't reachable outside the GUI session). If `git -C
+~/.claudesync/repo pull` works in a normal terminal but the same command
+fails when run from cron, this is almost always why.
+
+The fix that doesn't depend on any session/keychain state is a dedicated SSH
+deploy key, read straight off disk:
+
+1. Generate a key with no passphrase, dedicated to this one repo:
+   ```sh
+   ssh-keygen -t ed25519 -f ~/.ssh/claude-sync-deploy -N "" -C "claude-sync cron $(hostname -s)"
+   ```
+2. Add `~/.ssh/claude-sync-deploy.pub` as a **deploy key with write access**
+   on your data repo (GitHub: repo Settings -> Deploy keys -> Add deploy
+   key, uncheck "read-only"; GitLab: repo Settings -> Repository -> Deploy
+   keys, grant "Write access"). Deploy keys are scoped to that one repo
+   only — unlike a personal SSH key or token, this key cannot reach any
+   other repo on your account.
+3. Make sure the data repo's remote uses SSH (`git@...`), then pass the key
+   path to `install.sh`:
+   ```sh
+   ./install.sh <your-data-repo-git-url> ~/.ssh/claude-sync-deploy
+   ```
+
+If your machine already has working cron-compatible git auth (a custom
+credential helper you've confirmed runs under cron, an HTTPS remote backed
+by a `credential.helper=store` file, etc.), skip this — just omit the
+second argument and `install.sh` won't touch your auth setup at all.
 
 ## Running manually
 
@@ -140,6 +178,12 @@ Cron may not be running at all on that machine (common on machines that
 sleep/hibernate a lot, or where cron isn't enabled — e.g. some minimal WSL
 setups). Confirm with `crontab -l` and check `sync.log` has recent
 timestamps close to now.
+
+**`could not read Username ... Device not configured` in `sync.log`, but git
+works fine when I run it myself**
+Cron can't reach your login session's `ssh-agent` or GUI-gated credential
+store (see "Cron auth" in Setup above). Set up a dedicated SSH deploy key
+and re-run `install.sh <your-data-repo-git-url> ~/.ssh/claude-sync-deploy`.
 
 **Two machines keep syncing at nearly the same minute and one keeps losing
 the push race**

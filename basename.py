@@ -23,6 +23,17 @@ def resolve_project_basename(project_dir: Path) -> Optional[str]:
     return None
 
 
+def resolve_project_basename_cached(project_dir: Path, name_cache: dict) -> Optional[str]:
+    """Resolve a project's basename, falling back to a previously-cached
+    result if no jsonl with a cwd remains (e.g. it was rotated away since the
+    last successful resolution)."""
+    name = resolve_project_basename(project_dir)
+    if name is not None:
+        name_cache[project_dir.name] = name
+        return name
+    return name_cache.get(project_dir.name)
+
+
 def iter_project_dirs(claude_home: Path) -> Iterator[Path]:
     projects_root = claude_home / "projects"
     if not projects_root.is_dir():

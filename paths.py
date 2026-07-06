@@ -35,5 +35,9 @@ def manifest_path() -> Path:
     return state_dir() / "manifest.json"
 
 
+def project_names_path() -> Path:
+    return state_dir() / "project_names.json"
+
+
 def settings_path() -> Path:
     return claude_home() / "settings.json"

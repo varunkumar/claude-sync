@@ -72,10 +72,10 @@ def collect_local_file_change(local_path: Path, repo_path: Path, old_manifest: d
         mirror.remove_file(repo_path)
 
 
-def local_project_targets(home: Path, data: Path):
+def local_project_targets(home: Path, data: Path, name_cache: dict):
     targets = []
     for project_dir in basename.iter_project_dirs(home):
-        name = basename.resolve_project_basename(project_dir)
+        name = basename.resolve_project_basename_cached(project_dir, name_cache)
         if name is None:
             logger.warning("skip: no cwd found for %s", project_dir)
             continue
@@ -91,7 +91,15 @@ import paths
 
 
 def run_git(args, cwd) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        logger.error("git %s failed: %s", " ".join(args), e.stderr.strip())
+        raise
+
+
+def rebase_in_progress(repo_root: Path) -> bool:
+    return (repo_root / ".git" / "rebase-merge").exists() or (repo_root / ".git" / "rebase-apply").exists()
 
 
 def git_pull(repo_root: Path) -> None:
@@ -123,13 +131,17 @@ def git_commit_and_push(repo_root: Path, message: str) -> bool:
             # such as the global CLAUDE.md) can leave the rebase started by
             # git_pull mid-flight. Abort it so the repo isn't left wedged for
             # the next cron run; the local commit made above is preserved.
-            subprocess.run(["git", "rebase", "--abort"], cwd=repo_root)
+            # If the pull failed before a rebase ever started (e.g. the fetch
+            # itself failed due to an auth error), there's nothing to abort.
+            if rebase_in_progress(repo_root):
+                subprocess.run(["git", "rebase", "--abort"], cwd=repo_root)
             raise
     return True
 
 
-def sync_once(home: Path, repo_root: Path, data: Path, state_manifest_path: Path) -> None:
+def sync_once(home: Path, repo_root: Path, data: Path, state_manifest_path: Path, project_names_path: Path) -> None:
     old_manifest = manifest.load_manifest(state_manifest_path)
+    name_cache = manifest.load_manifest(project_names_path)
     # `current` is populated by the collect_* calls below purely because their
     # signatures require an out-param to write into; it reflects local state
     # *before* the apply-down phase and is intentionally not what gets saved
@@ -140,7 +152,8 @@ def sync_once(home: Path, repo_root: Path, data: Path, state_manifest_path: Path
     global_repo = data / "global" / "CLAUDE.md"
     skills_local = home / "skills"
     skills_repo = data / "skills"
-    project_targets = local_project_targets(home, data)
+    project_targets = local_project_targets(home, data, name_cache)
+    manifest.save_manifest(project_names_path, name_cache)
     settings_path = home / "settings.json"
     plugins_json_path = data / "plugins.json"
 
@@ -218,6 +231,7 @@ def main() -> int:
             repo_root=paths.repo_root(),
             data=paths.data_dir(),
             state_manifest_path=paths.manifest_path(),
+            project_names_path=paths.project_names_path(),
         )
     except Exception:
         logger.exception("claude-sync %s: sync failed", version)
