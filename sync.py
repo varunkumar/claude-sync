@@ -1,9 +1,19 @@
-import sys
+import logging
 from pathlib import Path
 
 import basename
 import manifest
 import mirror
+
+logger = logging.getLogger("claude-sync")
+
+
+def read_version() -> str:
+    version_file = Path(__file__).resolve().parent / "VERSION"
+    try:
+        return version_file.read_text().strip()
+    except FileNotFoundError:
+        return "unknown"
 
 
 def apply_remote_changes(local_root: Path, repo_dir: Path, old_manifest: dict, prefix: str) -> None:
@@ -67,7 +77,7 @@ def local_project_targets(home: Path, data: Path):
     for project_dir in basename.iter_project_dirs(home):
         name = basename.resolve_project_basename(project_dir)
         if name is None:
-            print(f"skip: no cwd found for {project_dir}", file=sys.stderr)
+            logger.warning("skip: no cwd found for %s", project_dir)
             continue
         local_memory = project_dir / "memory"
         repo_memory = data / "projects" / name / "memory"
@@ -195,12 +205,24 @@ def sync_once(home: Path, repo_root: Path, data: Path, state_manifest_path: Path
 
 
 def main() -> int:
-    sync_once(
-        home=paths.claude_home(),
-        repo_root=paths.repo_root(),
-        data=paths.data_dir(),
-        state_manifest_path=paths.manifest_path(),
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
+    version = read_version()
+    logger.info("claude-sync %s: sync starting", version)
+    try:
+        sync_once(
+            home=paths.claude_home(),
+            repo_root=paths.repo_root(),
+            data=paths.data_dir(),
+            state_manifest_path=paths.manifest_path(),
+        )
+    except Exception:
+        logger.exception("claude-sync %s: sync failed", version)
+        raise
+    logger.info("claude-sync %s: sync finished", version)
     return 0
 
 
