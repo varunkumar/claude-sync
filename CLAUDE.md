@@ -6,10 +6,14 @@ cron (`install.sh` wires this up), not a background daemon.
 
 ## Module map
 
-- `paths.py` — every filesystem location the tool touches, all
-  overridable via `CLAUDESYNC_CLAUDE_HOME` / `CLAUDESYNC_REPO_ROOT` /
-  `CLAUDESYNC_STATE_DIR` env vars. Tests always set these to temp dirs —
-  never point tests at a real `~/.claude`.
+- `paths.py` — every filesystem location the tool touches. `claude_home()`
+  / `state_dir()` are overridable via `CLAUDESYNC_CLAUDE_HOME` /
+  `CLAUDESYNC_STATE_DIR` env vars. `repo_root()` (and `data_dir()`, which is
+  now just an alias for it) resolves to `CLAUDESYNC_REPO_ROOT` if set,
+  otherwise the path persisted in `~/.claudesync/repo_root` by
+  `install.sh`, otherwise raises — there is no fallback to this repo's own
+  directory. Tests always set `CLAUDESYNC_*` env vars to temp dirs — never
+  point tests at a real `~/.claude`.
 - `basename.py` — resolves a project's stable name from the `cwd` field in
   its session `.jsonl` files. Never derive a project name by splitting the
   dashed `~/.claude/projects/<encoded-path>` folder name; it's ambiguous
@@ -20,16 +24,23 @@ cron (`install.sh` wires this up), not a background daemon.
   extracting/merging only `enabledPlugins` / `extraKnownMarketplaces` out
   of `settings.json` (never the whole file).
 - `memmerge.py` — the git merge driver for `MEMORY.md`, registered via
-  `data/.gitattributes`. Does a two-way union of lines from both sides,
-  not a true three-way merge — deletions aren't tracked, since memory
-  entries are treated as append-mostly.
+  `.gitattributes` at the root of the (separate) data repo. Does a two-way
+  union of lines from both sides, not a true three-way merge — deletions
+  aren't tracked, since memory entries are treated as append-mostly.
 - `sync.py` — orchestrates one full sync cycle: collect local changes up
-  into `data/`, commit and push (falling back to a plain pull if there was
-  nothing local to send; a rejected push retries via `pull --rebase` then
-  push once), then apply the now-authoritative repo content back down to
-  `~/.claude/`. Local changes are committed before being applied down
-  deliberately — pulling first was found to risk silently overwriting a
-  concurrent, not-yet-committed local edit with freshly-pulled content.
+  into the data repo, commit and push (falling back to a plain pull if
+  there was nothing local to send; a rejected push retries via
+  `pull --rebase` then push once), then apply the now-authoritative repo
+  content back down to `~/.claude/`. Local changes are committed before
+  being applied down deliberately — pulling first was found to risk
+  silently overwriting a concurrent, not-yet-committed local edit with
+  freshly-pulled content.
+
+This repo (`claude-sync`) holds only the tool's source. The synced data
+(global `CLAUDE.md`, `skills/`, `plugins.json`, per-project `memory/`)
+lives in a separate git repo whose location is provided once via
+`install.sh <data-repo-git-url>` and persisted to `~/.claudesync/repo_root`
+— see `paths.py` above.
 
 ## Testing conventions
 
@@ -44,3 +55,5 @@ cron (`install.sh` wires this up), not a background daemon.
 
 - Design: `docs/superpowers/specs/2026-07-04-claude-sync-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-07-04-claude-sync-implementation.md`
+- External data repo design: `docs/superpowers/specs/2026-07-06-external-data-repo-design.md`
+- External data repo plan: `docs/superpowers/plans/2026-07-06-external-data-repo.md`
