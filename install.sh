@@ -10,6 +10,7 @@ DATA_REPO_URL="$1"
 CODE_REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 STATE_DIR="${CLAUDESYNC_STATE_DIR:-$HOME/.claudesync}"
 DATA_REPO_DIR="$STATE_DIR/repo"
+VERSION="$(cat "$CODE_REPO_ROOT/VERSION" 2>/dev/null || echo unknown)"
 
 mkdir -p "$STATE_DIR"
 
@@ -29,15 +30,20 @@ fi
 
 git -C "$DATA_REPO_DIR" config merge.memmerge.driver "python3 $CODE_REPO_ROOT/memmerge.py %O %A %B %P"
 
-CRON_CMD="*/15 * * * * cd $CODE_REPO_ROOT && /usr/bin/env python3 $CODE_REPO_ROOT/sync.py >> $STATE_DIR/sync.log 2>&1"
+# Offset each machine's sync to a random minute within the 15-minute grid,
+# rather than every machine hitting :00/:15/:30/:45 at once and racing on push.
+RAND_MINUTE=$(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 15 ))
+CRON_MINUTES="$RAND_MINUTE,$((RAND_MINUTE + 15)),$((RAND_MINUTE + 30)),$((RAND_MINUTE + 45))"
+CRON_CMD="$CRON_MINUTES * * * * cd $CODE_REPO_ROOT && /usr/bin/env python3 $CODE_REPO_ROOT/sync.py >> $STATE_DIR/sync.log 2>&1"
 CRON_MARKER="# claude-sync"
 
+# Re-running this script (e.g. to pick up an upgrade) replaces any existing
+# claude-sync cron line rather than leaving a stale one in place, so changes
+# to the schedule or to CODE_REPO_ROOT actually take effect.
 EXISTING_CRON="$(crontab -l 2>/dev/null || true)"
-if ! printf '%s\n' "$EXISTING_CRON" | grep -qF "$CRON_MARKER"; then
-  { printf '%s\n' "$EXISTING_CRON"; echo "$CRON_CMD $CRON_MARKER"; } | crontab -
-  echo "Installed cron entry."
-else
-  echo "Cron entry already present; skipping."
-fi
+OTHER_CRON="$(printf '%s\n' "$EXISTING_CRON" | grep -vF "$CRON_MARKER" || true)"
+{ printf '%s\n' "$OTHER_CRON"; echo "$CRON_CMD $CRON_MARKER"; } | crontab -
+echo "Cron entry set at minute offset :$RAND_MINUTE."
 
-echo "claude-sync installed. Data repo: $DATA_REPO_DIR. Merge driver configured; cron runs every 15 minutes."
+echo "$VERSION" > "$STATE_DIR/installed_version"
+echo "claude-sync $VERSION installed. Data repo: $DATA_REPO_DIR. Merge driver configured; cron runs every 15 minutes (offset :$RAND_MINUTE)."

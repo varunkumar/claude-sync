@@ -73,6 +73,89 @@ already set up for the data repo's remote.
 python3 sync.py
 ```
 
+## Upgrading
+
+The current version lives in the `VERSION` file at the repo root. To
+upgrade an already-installed machine:
+
+```sh
+cd <wherever you cloned claude-sync>
+git pull
+./install.sh <your-data-repo-git-url>
+```
+
+`install.sh` is safe to re-run at any point: cloning the data repo,
+bootstrapping `.gitattributes`, and configuring the merge driver are all
+skipped if already done, and the cron entry is replaced (not duplicated)
+each time — so re-running it after a `git pull` is enough to pick up
+changes to the sync schedule or to the script paths cron invokes. It
+records the version it installed to `~/.claudesync/installed_version`.
+
+The cron job always runs `sync.py` out of the path you cloned to
+(`CODE_REPO_ROOT` at install time), so a `git pull` alone already updates
+the code the next scheduled run will use — re-running `install.sh` is only
+needed when the upgrade also changes the cron schedule or install-time
+configuration.
+
+## Logs
+
+Every cron-triggered run's stdout/stderr is appended to
+`$CLAUDESYNC_STATE_DIR/sync.log` (`~/.claudesync/sync.log` by default —
+the same directory as `manifest.json` and `repo_root`). Each line is
+timestamped (`YYYY-MM-DD HH:MM:SS LEVEL message`), and every run logs its
+`claude-sync <version>` at both start and finish, so you can tell which
+version produced a given log line and how long a run took by diffing the
+start/finish timestamps:
+
+```sh
+tail -f ~/.claudesync/sync.log
+```
+
+## FAQ / Troubleshooting
+
+**"No data repo configured" / `RuntimeError` mentioning `CLAUDESYNC_REPO_ROOT`**
+`~/.claudesync/repo_root` doesn't exist or points at a path that's gone
+(e.g. you moved or deleted `~/.claudesync/repo`). Re-run
+`./install.sh <your-data-repo-git-url>` — it's idempotent and will
+re-clone/re-link as needed.
+
+**Nothing seems to be syncing**
+1. Check the cron entry exists: `crontab -l | grep claude-sync`. If it's
+   missing, re-run `install.sh`.
+2. Check `~/.claudesync/sync.log` for the most recent run and whether it
+   logged `sync failed` with a traceback (see Logs above).
+3. Confirm git auth works non-interactively for the data repo: `git -C
+   ~/.claudesync/repo pull` should not prompt for a password.
+
+**Push/pull errors, or a run failed mid-rebase**
+`sync.py` retries a rejected push once via `pull --rebase`, and aborts the
+rebase automatically if that still conflicts (this only happens for files
+outside the `MEMORY.md` merge driver's coverage, e.g. two machines editing
+the global `CLAUDE.md` at the same time). The next scheduled run starts
+clean. If you want to resolve it immediately: `cd ~/.claudesync/repo && git
+status` to see the conflict, resolve by hand, commit, and push.
+
+**A machine's changes never show up on other machines**
+Cron may not be running at all on that machine (common on machines that
+sleep/hibernate a lot, or where cron isn't enabled — e.g. some minimal WSL
+setups). Confirm with `crontab -l` and check `sync.log` has recent
+timestamps close to now.
+
+**Two machines keep syncing at nearly the same minute and one keeps losing
+the push race**
+`install.sh` picks a random per-machine minute offset within each 15-minute
+block specifically to avoid this; a genuine collision should self-resolve
+via the retry-with-rebase logic. If it doesn't, see the rebase item above.
+
+**How do I check which version is installed?**
+`cat ~/.claudesync/installed_version`, or check the most recent
+`claude-sync <version>: sync starting` line in `sync.log`.
+
+**How do I report a bug?**
+Open an issue at https://github.com/varunkumar/claude-sync/issues. Include
+the version from `installed_version`, your OS, and the relevant lines from
+`sync.log` (the log is local-only and never synced, so it's safe to share).
+
 ## Running the tests
 
 ```sh
