@@ -72,6 +72,124 @@ def test_collect_local_changes_removes_locally_deleted_files_from_repo(tmp_path)
     assert snapshot == {}
 
 
+def test_collect_local_changes_multi_does_not_delete_file_only_missing_from_one_root(tmp_path):
+    # Two worktrees of the same project share one repo memory folder. The
+    # main checkout has feedback_x.md (pushed previously); a second worktree
+    # never received it locally, but that must not read as "deleted".
+    repo_dir = tmp_path / "repo_memory"
+    repo_dir.mkdir()
+    (repo_dir / "feedback_x.md").write_text("- from main checkout\n")
+    (repo_dir / "MEMORY.md").write_text("- shared entry\n")
+
+    old_manifest = {
+        "projects/demo/memory/feedback_x.md": manifest.hash_file(repo_dir / "feedback_x.md"),
+        "projects/demo/memory/MEMORY.md": manifest.hash_file(repo_dir / "MEMORY.md"),
+    }
+
+    root_main = tmp_path / "worktree_main"
+    root_main.mkdir()
+    (root_main / "feedback_x.md").write_text("- from main checkout\n")
+    (root_main / "MEMORY.md").write_text("- shared entry\n")
+
+    root_worktree = tmp_path / "worktree_b"
+    root_worktree.mkdir()
+    (root_worktree / "MEMORY.md").write_text("- shared entry\n")  # never got feedback_x.md
+
+    sync.collect_local_changes_multi(
+        [root_main, root_worktree], repo_dir, old_manifest, prefix="projects/demo/memory"
+    )
+
+    assert (repo_dir / "feedback_x.md").exists(), "file present in another worktree must not be deleted"
+
+
+def test_collect_local_changes_multi_deletes_when_absent_from_every_root(tmp_path):
+    repo_dir = tmp_path / "repo_memory"
+    repo_dir.mkdir()
+    (repo_dir / "gone.md").write_text("stale")
+
+    old_manifest = {"projects/demo/memory/gone.md": "oldhash"}
+
+    root_a = tmp_path / "worktree_a"
+    root_a.mkdir()
+    root_b = tmp_path / "worktree_b"
+    root_b.mkdir()
+
+    sync.collect_local_changes_multi([root_a, root_b], repo_dir, old_manifest, prefix="projects/demo/memory")
+
+    assert not (repo_dir / "gone.md").exists()
+
+
+def test_collect_local_changes_multi_prefers_most_recently_modified_on_conflict(tmp_path):
+    import os
+    import time
+
+    # A non-MEMORY.md conflict (e.g. a feedback file coincidentally written
+    # in two worktrees) isn't expected to be union-mergeable prose, so it
+    # still resolves to whichever copy was modified most recently.
+    repo_dir = tmp_path / "repo_memory"
+    repo_dir.mkdir()
+
+    root_a = tmp_path / "worktree_a"
+    root_a.mkdir()
+    (root_a / "feedback_x.md").write_text("- older edit\n")
+
+    root_b = tmp_path / "worktree_b"
+    root_b.mkdir()
+    (root_b / "feedback_x.md").write_text("- newer edit\n")
+
+    now = time.time()
+    os.utime(root_a / "feedback_x.md", (now - 100, now - 100))
+    os.utime(root_b / "feedback_x.md", (now, now))
+
+    sync.collect_local_changes_multi([root_a, root_b], repo_dir, old_manifest={}, prefix="projects/demo/memory")
+
+    assert (repo_dir / "feedback_x.md").read_text() == "- newer edit\n"
+
+
+def test_collect_local_changes_multi_union_merges_conflicting_memory_md(tmp_path):
+    # MEMORY.md is the one file union-merged across worktrees (mirroring the
+    # git-level memmerge driver used for cross-machine merges), since two
+    # worktrees diverging on it before ever syncing is the realistic case:
+    # every worktree gets its own MEMORY.md immediately.
+    repo_dir = tmp_path / "repo_memory"
+    repo_dir.mkdir()
+
+    root_a = tmp_path / "worktree_a"
+    root_a.mkdir()
+    (root_a / "MEMORY.md").write_text("- shared entry\n- from A\n")
+
+    root_b = tmp_path / "worktree_b"
+    root_b.mkdir()
+    (root_b / "MEMORY.md").write_text("- shared entry\n- from B\n")
+
+    merged = sync.collect_local_changes_multi(
+        [root_a, root_b], repo_dir, old_manifest={}, prefix="projects/demo/memory"
+    )
+
+    content = (repo_dir / "MEMORY.md").read_text()
+    assert "- shared entry" in content
+    assert "- from A" in content
+    assert "- from B" in content
+    assert merged == {"projects/demo/memory/MEMORY.md": manifest.hash_bytes(content.encode())}
+
+
+def test_collect_local_changes_multi_pushes_new_file_from_either_root(tmp_path):
+    repo_dir = tmp_path / "repo_memory"
+    repo_dir.mkdir()
+    root_a = tmp_path / "worktree_a"
+    root_a.mkdir()
+    root_b = tmp_path / "worktree_b"
+    root_b.mkdir()
+    (root_b / "new_entry.md").write_text("- new\n")
+
+    snapshot = sync.collect_local_changes_multi(
+        [root_a, root_b], repo_dir, old_manifest={}, prefix="projects/demo/memory"
+    )
+
+    assert (repo_dir / "new_entry.md").read_text() == "- new\n"
+    assert snapshot == {"projects/demo/memory/new_entry.md": manifest.hash_file(root_b / "new_entry.md")}
+
+
 def test_apply_remote_file_copies_when_repo_has_new_content(tmp_path):
     local_path = tmp_path / "CLAUDE.md"
     repo_path = tmp_path / "data" / "CLAUDE.md"

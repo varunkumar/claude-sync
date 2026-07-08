@@ -3,6 +3,7 @@ from pathlib import Path
 
 import basename
 import manifest
+import memmerge
 import mirror
 
 logger = logging.getLogger("claude-sync")
@@ -22,10 +23,15 @@ def apply_remote_changes(local_root: Path, repo_dir: Path, old_manifest: dict, p
 
     for rel, digest in repo_snapshot.items():
         key = f"{prefix}/{rel}"
-        if prefixed_old.get(key) != digest:
-            local_path = local_root / rel
-            if not local_path.is_file() or manifest.hash_file(local_path) != digest:
-                mirror.copy_file(repo_dir / rel, local_path)
+        local_path = local_root / rel
+        if not local_path.is_file():
+            # Always fill in a file this local_root doesn't have yet, even if
+            # the repo side hasn't changed since the last sync — this root
+            # may just be catching up for the first time (e.g. a worktree
+            # whose local memory folder never had it copied down before).
+            mirror.copy_file(repo_dir / rel, local_path)
+        elif prefixed_old.get(key) != digest and manifest.hash_file(local_path) != digest:
+            mirror.copy_file(repo_dir / rel, local_path)
 
     repo_keys = {f"{prefix}/{rel}" for rel in repo_snapshot}
     for key in prefixed_old:
@@ -44,6 +50,52 @@ def collect_local_changes(local_root: Path, repo_dir: Path, old_manifest: dict, 
     for key in changed:
         rel = key[len(prefix) + 1:]
         mirror.copy_file(local_root / rel, repo_dir / rel)
+    for key in deleted:
+        rel = key[len(prefix) + 1:]
+        mirror.remove_file(repo_dir / rel)
+
+    return local_snapshot
+
+
+def collect_local_changes_multi(local_roots, repo_dir: Path, old_manifest: dict, prefix: str) -> dict:
+    """Like collect_local_changes, but for several local roots that all map to
+    the same repo_dir (e.g. a project's main checkout plus its worktrees).
+    A file only reads as deleted when it's missing from *every* root. A
+    conflicting edit present in more than one root is union-merged for
+    MEMORY.md — mirroring the git-level memmerge driver used across
+    machines, since every worktree gets its own MEMORY.md immediately and
+    diverging before ever syncing is the realistic case — and resolved by
+    taking whichever copy was modified most recently for anything else,
+    where a real prose merge isn't expected to make sense. Either way, a
+    root that simply hasn't caught up yet (a fresh worktree, say) can't look
+    like the user deleted content that another root still has."""
+    candidates = {}
+    for local_root in local_roots:
+        for rel, digest in manifest.snapshot_tree(local_root).items():
+            path = local_root / rel
+            candidates.setdefault(rel, []).append((path, digest, path.stat().st_mtime))
+
+    resolved = {}
+    for rel, entries in candidates.items():
+        if len({digest for _, digest, _ in entries}) == 1 or rel != "MEMORY.md":
+            path, digest, _ = max(entries, key=lambda entry: entry[2])
+            resolved[rel] = (digest, path.read_bytes())
+        else:
+            merged_text = entries[0][0].read_text()
+            for path, _, _ in entries[1:]:
+                merged_text = memmerge.union_merge(merged_text, path.read_text())
+            resolved[rel] = (manifest.hash_bytes(merged_text.encode()), merged_text.encode())
+
+    local_snapshot = {f"{prefix}/{rel}": digest for rel, (digest, _) in resolved.items()}
+    prefixed_old = {k: v for k, v in old_manifest.items() if k.startswith(prefix + "/")}
+    changed, deleted = manifest.diff_against_manifest(local_snapshot, prefixed_old)
+
+    for key in changed:
+        rel = key[len(prefix) + 1:]
+        _, content = resolved[rel]
+        dst = repo_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(content)
     for key in deleted:
         rel = key[len(prefix) + 1:]
         mirror.remove_file(repo_dir / rel)
@@ -114,6 +166,16 @@ def local_project_targets(home: Path, data: Path, name_cache: dict):
         repo_memory = data / "projects" / name / "memory"
         targets.append((local_memory, repo_memory))
     return targets
+
+
+def group_targets_by_repo_memory(project_targets):
+    """Group (local_memory, repo_memory) pairs by their shared repo_memory —
+    a project's main checkout and its worktrees resolve to the same key and
+    so land on the same repo_memory, but each has its own local_memory dir."""
+    groups = {}
+    for local_memory, repo_memory in project_targets:
+        groups.setdefault(repo_memory, []).append(local_memory)
+    return groups
 
 
 import subprocess
@@ -197,10 +259,10 @@ def sync_once(home: Path, repo_root: Path, data: Path, state_manifest_path: Path
         {f"skills/{rel}": digest for rel, digest in
          collect_local_changes(skills_local, skills_repo, old_manifest, "skills").items()}
     )
-    for local_memory, repo_memory in project_targets:
+    for repo_memory, local_memories in group_targets_by_repo_memory(project_targets).items():
         project_name = repo_memory.parent.name
         prefix = f"projects/{project_name}/memory"
-        current.update(collect_local_changes(local_memory, repo_memory, old_manifest, prefix))
+        current.update(collect_local_changes_multi(local_memories, repo_memory, old_manifest, prefix))
 
     mirror.sync_plugins_to_repo(settings_path, plugins_json_path)
     if plugins_json_path.is_file():

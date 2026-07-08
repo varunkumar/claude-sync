@@ -32,7 +32,10 @@ cron (`install.sh` wires this up), not a background daemon.
 - `memmerge.py` — the git merge driver for `MEMORY.md`, registered via
   `.gitattributes` at the root of the (separate) data repo. Does a two-way
   union of lines from both sides, not a true three-way merge — deletions
-  aren't tracked, since memory entries are treated as append-mostly.
+  aren't tracked, since memory entries are treated as append-mostly. Its
+  `union_merge` is also called directly by `sync.py` (not just invoked as a
+  git driver) to reconcile multiple local worktrees' `MEMORY.md` in the same
+  sync cycle, before any of it is ever committed.
 - `sync.py` — orchestrates one full sync cycle: collect local changes up
   into the data repo, commit and push (falling back to a plain pull if
   there was nothing local to send; a rejected push retries via
@@ -48,7 +51,25 @@ cron (`install.sh` wires this up), not a background daemon.
   repo having been edited outside claude-sync (e.g. a manual `rm`+commit) —
   without it, the tool can't distinguish that from a legitimate deletion and
   will mirror the loss down to every machine's `~/.claude`, which is exactly
-  what happened once before this guard existed.
+  what happened once before this guard existed. A project's main checkout
+  and its worktrees resolve to the same key (see `basename.py` above) and so
+  share one `repo_memory` folder, but each has its own local memory dir —
+  `group_targets_by_repo_memory` groups them, and `collect_local_changes_multi`
+  unions their snapshots before diffing against the manifest, so a worktree
+  that simply hasn't caught up on some file yet doesn't read as having
+  deleted it (only absence from *every* local root does). A same-cycle
+  conflict between two roots for `MEMORY.md` is union-merged via
+  `memmerge.union_merge` — the same function backing the git-level merge
+  driver below, since every worktree gets its own `MEMORY.md` immediately
+  and diverging before ever syncing is the realistic case; anything else
+  (e.g. a feedback file coincidentally written in two worktrees) resolves to
+  whichever copy was modified most recently, since a real prose merge isn't
+  expected to make sense there. `apply_remote_changes` mirrors down to each local root
+  independently and always fills in a file a given root is missing, even if
+  the repo side didn't change since the last cycle — that unchanged-digest
+  shortcut used to assume the one local root it knew about already had the
+  file, which broke the moment a second root (a fresh worktree) entered the
+  picture.
 
 This repo (`claude-sync`) holds only the tool's source. The synced data
 (global `CLAUDE.md`, `skills/`, `plugins.json`, per-project `memory/`)

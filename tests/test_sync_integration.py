@@ -304,6 +304,62 @@ def test_sync_once_refuses_to_wipe_local_when_repo_loses_most_content_out_of_ban
     assert manifest_after == manifest_before
 
 
+def test_sync_once_does_not_delete_content_only_known_to_one_worktree(tmp_path):
+    # A project's main checkout and one of its worktrees are two separate
+    # local project dirs that both resolve to the same remote-keyed project
+    # (they share the same origin), so they end up mapped to the same
+    # repo_memory folder. The main checkout has an existing feedback file the
+    # worktree never received locally; syncing must not read that as the
+    # worktree having deleted it.
+    repo, remote = _init_repo_with_remote(tmp_path)
+
+    source_repo = tmp_path / "source_repo"
+    source_repo.mkdir()
+    _git(["init"], cwd=source_repo)
+    _git(["config", "user.email", "test@example.com"], cwd=source_repo)
+    _git(["config", "user.name", "Test"], cwd=source_repo)
+    (source_repo / "README.md").write_text("hi")
+    _git(["add", "README.md"], cwd=source_repo)
+    _git(["commit", "-m", "init"], cwd=source_repo)
+    _git(["remote", "add", "origin", "git@github.com:example/demo.git"], cwd=source_repo)
+
+    worktree_dir = tmp_path / "source_repo_worktree"
+    _git(["worktree", "add", "-b", "feature-x", str(worktree_dir)], cwd=source_repo)
+
+    home = tmp_path / "home" / ".claude"
+    main_project = home / "projects" / "-encoded-main"
+    (main_project / "memory").mkdir(parents=True)
+    (main_project / "memory" / "MEMORY.md").write_text("- shared entry\n")
+    (main_project / "memory" / "feedback_old.md").write_text("- pushed before the worktree existed\n")
+    (main_project / "session.jsonl").write_text(json.dumps({"cwd": str(source_repo)}) + "\n")
+
+    state_manifest_path = tmp_path / "state" / "manifest.json"
+    project_names_path = tmp_path / "state" / "project_names.json"
+    sync.sync_once(
+        home=home, repo_root=repo, data=repo / "data",
+        state_manifest_path=state_manifest_path, project_names_path=project_names_path,
+    )
+
+    # Now the worktree gets its own local project dir, whose memory folder
+    # never had feedback_old.md copied down to it yet.
+    worktree_project = home / "projects" / "-encoded-worktree"
+    (worktree_project / "memory").mkdir(parents=True)
+    (worktree_project / "memory" / "MEMORY.md").write_text("- shared entry\n")
+    (worktree_project / "session.jsonl").write_text(json.dumps({"cwd": str(worktree_dir)}) + "\n")
+
+    sync.sync_once(
+        home=home, repo_root=repo, data=repo / "data",
+        state_manifest_path=state_manifest_path, project_names_path=project_names_path,
+    )
+
+    repo_memory = repo / "data" / "projects" / "github.com" / "example" / "demo" / "memory"
+    assert (repo_memory / "feedback_old.md").exists(), (
+        "worktree not yet having a file locally must not delete it from the shared repo memory"
+    )
+    # And the fan-out down-apply should have caught the worktree up with it.
+    assert (worktree_project / "memory" / "feedback_old.md").is_file()
+
+
 def test_sync_once_aborts_rebase_on_non_memory_conflict(tmp_path):
     # Two machines edit the global CLAUDE.md differently without an
     # intervening sync, so the retry `git pull --rebase` in
