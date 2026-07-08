@@ -17,7 +17,13 @@ cron (`install.sh` wires this up), not a background daemon.
 - `basename.py` — resolves a project's stable name from the `cwd` field in
   its session `.jsonl` files. Never derive a project name by splitting the
   dashed `~/.claude/projects/<encoded-path>` folder name; it's ambiguous
-  whenever the real basename itself contains a dash.
+  whenever the real basename itself contains a dash. The key is the
+  normalized `origin` remote URL (`git remote get-url origin`, e.g. both
+  ssh and https forms of the same repo collapse to `github.com/org/repo`)
+  when one can be resolved — this is what makes a git worktree map to the
+  same project as its main checkout, since worktrees share the main
+  repo's remotes. Falls back to the raw `cwd` basename when there's no
+  remote, or the directory has since been deleted or moved.
 - `manifest.py` — content hashing, directory snapshotting, and diffing
   against the last-synced state recorded in `~/.claudesync/manifest.json`.
 - `mirror.py` — plain file copy/remove helpers, plus the one special case:
