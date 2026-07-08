@@ -48,7 +48,20 @@ cron (`install.sh` wires this up), not a background daemon.
   repo having been edited outside claude-sync (e.g. a manual `rm`+commit) —
   without it, the tool can't distinguish that from a legitimate deletion and
   will mirror the loss down to every machine's `~/.claude`, which is exactly
-  what happened once before this guard existed.
+  what happened once before this guard existed. A project's main checkout
+  and its worktrees resolve to the same key (see `basename.py` above) and so
+  share one `repo_memory` folder, but each has its own local memory dir —
+  `group_targets_by_repo_memory` groups them, and `collect_local_changes_multi`
+  unions their snapshots before diffing against the manifest, so a worktree
+  that simply hasn't caught up on some file yet doesn't read as having
+  deleted it (only absence from *every* local root does), and a same-cycle
+  conflict between two roots resolves to whichever copy was modified most
+  recently. `apply_remote_changes` mirrors down to each local root
+  independently and always fills in a file a given root is missing, even if
+  the repo side didn't change since the last cycle — that unchanged-digest
+  shortcut used to assume the one local root it knew about already had the
+  file, which broke the moment a second root (a fresh worktree) entered the
+  picture.
 
 This repo (`claude-sync`) holds only the tool's source. The synced data
 (global `CLAUDE.md`, `skills/`, `plugins.json`, per-project `memory/`)
