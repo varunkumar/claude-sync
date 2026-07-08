@@ -123,24 +123,54 @@ def test_collect_local_changes_multi_prefers_most_recently_modified_on_conflict(
     import os
     import time
 
+    # A non-MEMORY.md conflict (e.g. a feedback file coincidentally written
+    # in two worktrees) isn't expected to be union-mergeable prose, so it
+    # still resolves to whichever copy was modified most recently.
     repo_dir = tmp_path / "repo_memory"
     repo_dir.mkdir()
 
     root_a = tmp_path / "worktree_a"
     root_a.mkdir()
-    (root_a / "MEMORY.md").write_text("- older edit\n")
+    (root_a / "feedback_x.md").write_text("- older edit\n")
 
     root_b = tmp_path / "worktree_b"
     root_b.mkdir()
-    (root_b / "MEMORY.md").write_text("- newer edit\n")
+    (root_b / "feedback_x.md").write_text("- newer edit\n")
 
     now = time.time()
-    os.utime(root_a / "MEMORY.md", (now - 100, now - 100))
-    os.utime(root_b / "MEMORY.md", (now, now))
+    os.utime(root_a / "feedback_x.md", (now - 100, now - 100))
+    os.utime(root_b / "feedback_x.md", (now, now))
 
     sync.collect_local_changes_multi([root_a, root_b], repo_dir, old_manifest={}, prefix="projects/demo/memory")
 
-    assert (repo_dir / "MEMORY.md").read_text() == "- newer edit\n"
+    assert (repo_dir / "feedback_x.md").read_text() == "- newer edit\n"
+
+
+def test_collect_local_changes_multi_union_merges_conflicting_memory_md(tmp_path):
+    # MEMORY.md is the one file union-merged across worktrees (mirroring the
+    # git-level memmerge driver used for cross-machine merges), since two
+    # worktrees diverging on it before ever syncing is the realistic case:
+    # every worktree gets its own MEMORY.md immediately.
+    repo_dir = tmp_path / "repo_memory"
+    repo_dir.mkdir()
+
+    root_a = tmp_path / "worktree_a"
+    root_a.mkdir()
+    (root_a / "MEMORY.md").write_text("- shared entry\n- from A\n")
+
+    root_b = tmp_path / "worktree_b"
+    root_b.mkdir()
+    (root_b / "MEMORY.md").write_text("- shared entry\n- from B\n")
+
+    merged = sync.collect_local_changes_multi(
+        [root_a, root_b], repo_dir, old_manifest={}, prefix="projects/demo/memory"
+    )
+
+    content = (repo_dir / "MEMORY.md").read_text()
+    assert "- shared entry" in content
+    assert "- from A" in content
+    assert "- from B" in content
+    assert merged == {"projects/demo/memory/MEMORY.md": manifest.hash_bytes(content.encode())}
 
 
 def test_collect_local_changes_multi_pushes_new_file_from_either_root(tmp_path):

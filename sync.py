@@ -3,6 +3,7 @@ from pathlib import Path
 
 import basename
 import manifest
+import memmerge
 import mirror
 
 logger = logging.getLogger("claude-sync")
@@ -59,28 +60,42 @@ def collect_local_changes(local_root: Path, repo_dir: Path, old_manifest: dict, 
 def collect_local_changes_multi(local_roots, repo_dir: Path, old_manifest: dict, prefix: str) -> dict:
     """Like collect_local_changes, but for several local roots that all map to
     the same repo_dir (e.g. a project's main checkout plus its worktrees).
-    A file only reads as deleted when it's missing from *every* root, and a
-    conflicting edit present in more than one root is resolved by taking
-    whichever copy was modified most recently — otherwise a root that simply
-    hasn't caught up yet (a fresh worktree, say) would look like the user
-    deleted content that another root still has."""
-    combined = {}
+    A file only reads as deleted when it's missing from *every* root. A
+    conflicting edit present in more than one root is union-merged for
+    MEMORY.md — mirroring the git-level memmerge driver used across
+    machines, since every worktree gets its own MEMORY.md immediately and
+    diverging before ever syncing is the realistic case — and resolved by
+    taking whichever copy was modified most recently for anything else,
+    where a real prose merge isn't expected to make sense. Either way, a
+    root that simply hasn't caught up yet (a fresh worktree, say) can't look
+    like the user deleted content that another root still has."""
+    candidates = {}
     for local_root in local_roots:
         for rel, digest in manifest.snapshot_tree(local_root).items():
             path = local_root / rel
-            mtime = path.stat().st_mtime
-            existing = combined.get(rel)
-            if existing is None or mtime > existing[2]:
-                combined[rel] = (digest, path, mtime)
+            candidates.setdefault(rel, []).append((path, digest, path.stat().st_mtime))
 
-    local_snapshot = {f"{prefix}/{rel}": digest for rel, (digest, _, _) in combined.items()}
+    resolved = {}
+    for rel, entries in candidates.items():
+        if len({digest for _, digest, _ in entries}) == 1 or rel != "MEMORY.md":
+            path, digest, _ = max(entries, key=lambda entry: entry[2])
+            resolved[rel] = (digest, path.read_bytes())
+        else:
+            merged_text = entries[0][0].read_text()
+            for path, _, _ in entries[1:]:
+                merged_text = memmerge.union_merge(merged_text, path.read_text())
+            resolved[rel] = (manifest.hash_bytes(merged_text.encode()), merged_text.encode())
+
+    local_snapshot = {f"{prefix}/{rel}": digest for rel, (digest, _) in resolved.items()}
     prefixed_old = {k: v for k, v in old_manifest.items() if k.startswith(prefix + "/")}
     changed, deleted = manifest.diff_against_manifest(local_snapshot, prefixed_old)
 
     for key in changed:
         rel = key[len(prefix) + 1:]
-        _, source_path, _ = combined[rel]
-        mirror.copy_file(source_path, repo_dir / rel)
+        _, content = resolved[rel]
+        dst = repo_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(content)
     for key in deleted:
         rel = key[len(prefix) + 1:]
         mirror.remove_file(repo_dir / rel)
