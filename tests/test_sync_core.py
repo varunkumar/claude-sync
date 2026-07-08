@@ -101,7 +101,7 @@ def test_local_project_targets_maps_basename_to_repo_memory_dir(tmp_path):
     project_dir = home / "projects" / "-Users-varunkumar-projects-claude-sync"
     (project_dir / "memory").mkdir(parents=True)
     with (project_dir / "session.jsonl").open("w") as f:
-        f.write('{"cwd": "/Users/varunkumar/projects/claude-sync"}\n')
+        f.write('{"cwd": "' + str(tmp_path / "nonexistent" / "claude-sync") + '"}\n')
 
     targets = sync.local_project_targets(home, data, {})
 
