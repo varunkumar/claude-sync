@@ -72,6 +72,37 @@ def collect_local_file_change(local_path: Path, repo_path: Path, old_manifest: d
         mirror.remove_file(repo_path)
 
 
+def build_repo_manifest(
+    global_repo: Path, skills_repo: Path, project_targets, plugins_json_path: Path
+) -> dict:
+    repo_manifest = {}
+    if global_repo.is_file():
+        repo_manifest["global/CLAUDE.md"] = manifest.hash_file(global_repo)
+    repo_manifest.update(
+        {f"skills/{rel}": digest for rel, digest in manifest.snapshot_tree(skills_repo).items()}
+    )
+    for _local_memory, repo_memory in project_targets:
+        project_name = repo_memory.parent.name
+        prefix = f"projects/{project_name}/memory"
+        repo_manifest.update(
+            {f"{prefix}/{rel}": digest for rel, digest in manifest.snapshot_tree(repo_memory).items()}
+        )
+    if plugins_json_path.is_file():
+        repo_manifest["plugins.json"] = manifest.hash_file(plugins_json_path)
+    return repo_manifest
+
+
+def is_mass_deletion(old_manifest: dict, current_manifest: dict, threshold: float = 0.5) -> bool:
+    """True when more than `threshold` of everything previously synced is now
+    missing from the repo. A single legitimate deletion never trips this (it's
+    a small fraction of the whole manifest); a repo edited outside claude-sync
+    losing nearly all of its tracked content in one cycle does."""
+    if not old_manifest:
+        return False
+    missing = sum(1 for key in old_manifest if key not in current_manifest)
+    return missing / len(old_manifest) > threshold
+
+
 def local_project_targets(home: Path, data: Path, name_cache: dict):
     targets = []
     for project_dir in basename.iter_project_dirs(home):
@@ -180,6 +211,24 @@ def sync_once(home: Path, repo_root: Path, data: Path, state_manifest_path: Path
         # changes we don't have yet.
         git_pull(repo_root)
 
+    # `data/` is now the authoritative post-merge state once the git
+    # commit/push/pull have settled. Check it against what was previously
+    # synced *before* mirroring any of it down to local: if the repo lost
+    # nearly everything it used to have, that's the signature of the repo
+    # having been edited outside claude-sync (e.g. a manual wipe) rather than
+    # a legitimate deletion, and applying it down would propagate that loss
+    # to local too. Refuse and leave both local and the manifest untouched so
+    # this keeps getting flagged every cycle until a human resolves it.
+    repo_manifest = build_repo_manifest(global_repo, skills_repo, project_targets, plugins_json_path)
+    if is_mass_deletion(old_manifest, repo_manifest):
+        logger.warning(
+            "claude-sync: refusing to apply — the data repo is missing most of what was "
+            "previously synced (%d/%d files gone); it may have been edited outside "
+            "claude-sync. Leaving local ~/.claude untouched until this is resolved.",
+            sum(1 for key in old_manifest if key not in repo_manifest), len(old_manifest),
+        )
+        return
+
     # Apply the now-authoritative (possibly merged) repo content back down
     # into the local home directory.
     apply_remote_file(global_local, global_repo, old_manifest, "global/CLAUDE.md")
@@ -189,32 +238,15 @@ def sync_once(home: Path, repo_root: Path, data: Path, state_manifest_path: Path
         apply_remote_changes(local_memory, repo_memory, old_manifest, f"projects/{project_name}/memory")
     mirror.apply_plugins_from_repo(settings_path, plugins_json_path)
 
-    # Re-snapshot from the repo/data side *after* the apply-down phase, rather
-    # than saving the pre-apply `current` collected above. `data/` is the
-    # authoritative post-merge state once the git commit/push/pull have
-    # settled, and by this point local has been made to match it. Saving the
-    # earlier, pre-apply snapshot would omit anything that arrived from a
-    # remote machine this cycle (a merged MEMORY.md, a new skill, etc.),
-    # causing it to be misdetected as a local change next cycle, and — worse —
-    # a local deletion made in between two cycles could get silently
-    # re-applied from the remote side because the manifest never reflected
-    # the addition in the first place.
-    final_manifest = {}
-    if global_repo.is_file():
-        final_manifest["global/CLAUDE.md"] = manifest.hash_file(global_repo)
-    final_manifest.update(
-        {f"skills/{rel}": digest for rel, digest in manifest.snapshot_tree(skills_repo).items()}
-    )
-    for local_memory, repo_memory in project_targets:
-        project_name = repo_memory.parent.name
-        prefix = f"projects/{project_name}/memory"
-        final_manifest.update(
-            {f"{prefix}/{rel}": digest for rel, digest in manifest.snapshot_tree(repo_memory).items()}
-        )
-    if plugins_json_path.is_file():
-        final_manifest["plugins.json"] = manifest.hash_file(plugins_json_path)
-
-    manifest.save_manifest(state_manifest_path, final_manifest)
+    # Saving `repo_manifest` (rather than the pre-apply `current` collected
+    # above) matters because apply-down can pull in content this cycle didn't
+    # push itself (a merged MEMORY.md, a new skill from another machine, etc.);
+    # saving the earlier snapshot would miss that, causing it to be
+    # misdetected as a local change next cycle, and — worse — a local deletion
+    # made in between two cycles could get silently re-applied from the
+    # remote side because the manifest never reflected the addition in the
+    # first place.
+    manifest.save_manifest(state_manifest_path, repo_manifest)
 
 
 def main() -> int:

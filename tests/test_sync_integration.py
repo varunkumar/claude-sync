@@ -254,6 +254,56 @@ def test_sync_once_manifest_reflecting_post_apply_state_avoids_wasted_recommit(t
     )
 
 
+def test_sync_once_refuses_to_wipe_local_when_repo_loses_most_content_out_of_band(tmp_path):
+    # Populate a normal, fully-synced state: global CLAUDE.md, a skill, and a
+    # project's memory file.
+    repo, remote = _init_repo_with_remote(tmp_path)
+    home = tmp_path / "home" / ".claude"
+    home.mkdir(parents=True)
+    (home / "CLAUDE.md").write_text("global instructions\n")
+    (home / "skills" / "shared").mkdir(parents=True)
+    (home / "skills" / "shared" / "SKILL.md").write_text("skill content\n")
+    project_dir = home / "projects" / "-Users-alice-projects-demo"
+    (project_dir / "memory").mkdir(parents=True)
+    (project_dir / "memory" / "MEMORY.md").write_text("- an entry\n")
+    (project_dir / "session.jsonl").write_text(
+        json.dumps({"cwd": "/Users/alice/projects/demo"}) + "\n"
+    )
+    state_manifest_path = tmp_path / "state" / "manifest.json"
+    project_names_path = tmp_path / "state" / "project_names.json"
+    sync.sync_once(
+        home=home, repo_root=repo, data=repo / "data",
+        state_manifest_path=state_manifest_path, project_names_path=project_names_path,
+    )
+    manifest_before = json.loads(state_manifest_path.read_text())
+    assert len(manifest_before) >= 3
+
+    # Simulate an out-of-band wipe: someone deletes almost everything directly
+    # in the data repo, bypassing the sync tool's own collect/commit flow.
+    import shutil
+    shutil.rmtree(repo / "data" / "global")
+    shutil.rmtree(repo / "data" / "skills")
+    shutil.rmtree(repo / "data" / "projects")
+    _git(["add", "-A"], cwd=repo)
+    _git(["commit", "-m", "out-of-band wipe"], cwd=repo)
+    _git(["push"], cwd=repo)
+
+    sync.sync_once(
+        home=home, repo_root=repo, data=repo / "data",
+        state_manifest_path=state_manifest_path, project_names_path=project_names_path,
+    )
+
+    # Local content must be left untouched rather than mirroring the wipe.
+    assert (home / "CLAUDE.md").read_text() == "global instructions\n"
+    assert (home / "skills" / "shared" / "SKILL.md").read_text() == "skill content\n"
+    assert (project_dir / "memory" / "MEMORY.md").read_text() == "- an entry\n"
+
+    # The manifest must not have been updated to treat the wipe as accepted,
+    # so the next cycle keeps refusing until a human resolves it.
+    manifest_after = json.loads(state_manifest_path.read_text())
+    assert manifest_after == manifest_before
+
+
 def test_sync_once_aborts_rebase_on_non_memory_conflict(tmp_path):
     # Two machines edit the global CLAUDE.md differently without an
     # intervening sync, so the retry `git pull --rebase` in
