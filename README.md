@@ -10,8 +10,13 @@ separate from this repo, which holds only the tool's source.
 - `~/.claude/CLAUDE.md` (global instructions)
 - `~/.claude/skills/`
 - `~/.claude/projects/<hash>/memory/` (per-project memory, mapped to a
-  stable name via each project's session `cwd`, not the ambiguous encoded
-  folder name)
+  stable name derived from each project's session `cwd` — never the
+  ambiguous encoded folder name. The name is the normalized git `origin`
+  remote URL when one can be resolved (e.g. `github.com/org/repo`, the
+  same for ssh/https/scp remote forms), so a worktree syncs to the same
+  project as its main checkout since it shares the same remotes. Falls
+  back to the `cwd` basename when there's no remote, or the directory has
+  since been deleted or moved)
 - Only the `enabledPlugins` and `extraKnownMarketplaces` keys of
   `~/.claude/settings.json` — not the plugin cache itself, and not any
   other settings (hooks, effort level, etc. stay machine-local)
