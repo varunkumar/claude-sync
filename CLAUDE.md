@@ -40,7 +40,15 @@ cron (`install.sh` wires this up), not a background daemon.
   content back down to `~/.claude/`. Local changes are committed before
   being applied down deliberately — pulling first was found to risk
   silently overwriting a concurrent, not-yet-committed local edit with
-  freshly-pulled content.
+  freshly-pulled content. Before applying anything down, `is_mass_deletion`
+  compares the repo's current content against the last-synced manifest: if
+  more than half of everything previously synced is now missing from the
+  repo, `sync_once` refuses to apply and returns without touching local or
+  saving the manifest, logging a warning instead. This guards against the
+  repo having been edited outside claude-sync (e.g. a manual `rm`+commit) —
+  without it, the tool can't distinguish that from a legitimate deletion and
+  will mirror the loss down to every machine's `~/.claude`, which is exactly
+  what happened once before this guard existed.
 
 This repo (`claude-sync`) holds only the tool's source. The synced data
 (global `CLAUDE.md`, `skills/`, `plugins.json`, per-project `memory/`)

@@ -83,6 +83,24 @@ def test_apply_remote_file_copies_when_repo_has_new_content(tmp_path):
     assert local_path.read_text() == "global instructions"
 
 
+def test_is_mass_deletion_true_when_most_of_manifest_disappeared(tmp_path):
+    old_manifest = {f"skills/{i}.md": "hash" for i in range(10)}
+    current_manifest = {"skills/0.md": "hash"}
+
+    assert sync.is_mass_deletion(old_manifest, current_manifest) is True
+
+
+def test_is_mass_deletion_false_for_partial_deletion(tmp_path):
+    old_manifest = {f"skills/{i}.md": "hash" for i in range(10)}
+    current_manifest = {f"skills/{i}.md": "hash" for i in range(9)}
+
+    assert sync.is_mass_deletion(old_manifest, current_manifest) is False
+
+
+def test_is_mass_deletion_false_when_old_manifest_empty():
+    assert sync.is_mass_deletion({}, {}) is False
+
+
 def test_collect_local_file_change_copies_local_to_repo_and_updates_current(tmp_path):
     local_path = tmp_path / "CLAUDE.md"
     repo_path = tmp_path / "data" / "CLAUDE.md"
